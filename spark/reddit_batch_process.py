@@ -1,10 +1,15 @@
 """
 This script batch process reddit data set to generate a table of word counts for each word in every subreddit
 """
-
+from pyspark import SparkContext
+from pyspark.sql import SQLContext
 from pyspark.sql import functions as F
 from pyspark.sql.types import MapType,StringType,IntegerType
 from collections import Counter
+
+sc = SparkContext(appName="spark_streaming_kafka")
+sc.setLogLevel("WARN")
+sqlContext = SQLContext(sc)
 
 # load reddit data from S3
 path = "s3n://erictsai/201701_top10000000.json"
