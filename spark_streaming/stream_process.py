@@ -1,6 +1,6 @@
 from pyspark import SparkContext  
 #    Spark Streaming
-from pyspark.streaming import StreamingContext  
+from pyspark.streaming import StreamingContext
 #    Kafka
 from pyspark.streaming.kafka import KafkaUtils  
 #    json parsing
@@ -10,14 +10,29 @@ from pyspark.sql import SparkSession
 import random
 import re
 from nltk.corpus import stopwords
+from cassandra.cluster import Cluster
+"""
+__all__ = ["StreamingListener"]
 
+class myListener(object):
+#    def __init__(self, session):
+#        self.session = session
+    class Java:
+        implements = ["org.apache.spark.streaming.api.java.PythonStreamingListener"]
+
+    def onBatchCompleted(self, batchCompleted):
+        pass
+        #print(type(batchCompleted))
+        #print("WoOoOoF!!save to cassandra")
+        #return
+"""
 english_stopwords = stopwords.words("english")
 
 sc = SparkContext(appName="spark_streaming_kafka")
 sc.setLogLevel("WARN")
 
 spark = SparkSession(sc).builder\
-                .master("spark://10.0.0.5:7077")\
+                .master("spark://10.0.0.10:7077")\
                 .appName("spark_stream")\
                 .config("--packages", "com.datastax.spark:spark-cassandra-connector_2.11:2.0.6,org.apache.spark:spark-streaming-kafka-0-8_2.11:2.0.2")\
                 .getOrCreate()
@@ -39,15 +54,10 @@ subreddit_list = subreddit_list[0][0].split()
 
 total_count_list = others_df.select("content").where("category = 'total_counts'").collect()
 total_count_list = map(int, total_count_list[0][0].split())
-
-tweet_count_list = others_df.select("content").where("category = 'tweet_count'").collect()
-if len(tweet_count_list) == 0:
-    tweet_count_list = [ 0 for _ in range(len(subreddit_list)) ]
-    tweet_count_dict = dict(zip(subreddit_list, tweet_count_list ))
-else:
-    tweet_count_dict = json.loads(tweet_count_list[0][0])
-
 ssc = StreamingContext(sc, 10) 
+
+#listener = myListener()
+#ssc.addStreamingListener(listener)
 
 kafkaStream = KafkaUtils.createStream(ssc, 'ec2-35-161-255-24.us-west-2.compute.amazonaws.com:2181', 'spark-streaming', {'twitter':1}) 
 
@@ -77,50 +87,26 @@ def get_top_topic(word_set):
     return subreddit_list[ percentage_list.index(max(percentage_list)) ]
     #return random.sample(subreddit_list, 1)[0]
 
-def myfunc(row):
-    topic = get_top_topic(get_word_set(row[0]))
-    #tweet_count_dict[topic] += 1
-#parsed.map(lambda tweet: get_word_set(tweet['text'])).pprint()
+subreddit_topic = parsed.map(lambda tweet: get_top_topic(get_word_set(tweet['text'])))
+subreddit_topic.pprint()
 
-#subreddit_topic = parsed.map(lambda tweet: get_top_topic(get_word_set(tweet['text'])))
-parsed.map(lambda tweet: get_top_topic(get_word_set(tweet['text']))).pprint()
-parsed.foreachRDD(lambda rdd: rdd.map(myfunc))
-#parsed.pprint()
-#subreddit_topic.pprint()
+def update_tweet_count(partition):
+    cluster = Cluster(['10.0.0.4'])
+    session = cluster.connect('playground')
 
-def update_tweet_count(rdd):
-    for subreddit in rdd.collect():
-    	tweet_count_dict[subreddit] += 1
+    query = "SELECT content FROM others WHERE category = 'tweet_count'"
+    response = session.execute(query)
+    tweet_count_dict = json.loads(response[0].content)
+    
+    for row in partition:
+    	tweet_count_dict[row] += 1
 
-#subreddit_topic.foreachRDD(update_tweet_count)
-#for topic in subreddit_topic.collect():
-    #tweet_count_dict[topic] += 1
+    query = "INSERT INTO others (category, content) VALUES ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
+    session.execute(query)
+    session.shutdown()
+    return
 
-spark.createDataFrame([{'category':'tweet_count_test', 'content': json.dumps(tweet_count_dict)}]).write\
-    .format("org.apache.spark.sql.cassandra")\
-    .mode('append')\
-    .options(table="others", keyspace="playground")\
-    .save()
-"""
-spark.createDataFrame([{'category': 'tweet_count_test', 'content': 'success!'}]).write\
-    .format("org.apache.spark.sql.cassandra")\
-    .mode('append')\
-    .options(table="others", keyspace="playground")\
-    .save()
-"""
-#parsed.map(lambda x: type(x)).pprint()
-#parsed.map(lambda x: filter ( lambda y: y in set(string.printable), x['text']) ).pprint()
-
-#parsed.map(lambda x: x['lang'] ).pprint()
-print("here!!!!!!!!!!!!!!!!")
-
-#print(type(parsed))
-#parsed.map(lambda tweet: tweet['text'])
-
-#parsed.pprint()
-#content = parsed.map(lambda tweet: tweet['text'])  
-#content.pprint()
+subreddit_topic.foreachRDD( lambda rdd: rdd.foreachPartition(update_tweet_count) )
 ssc.start()  
 ssc.awaitTermination() 
-
 
