@@ -9,12 +9,12 @@ from collections import Counter
 import re
 from nltk.corpus import stopwords
 
-sc = SparkContext(appName="spark_streaming_kafka")
+sc = SparkContext(appName="spark_batch_process")
 sc.setLogLevel("WARN")
 sqlContext = SQLContext(sc)
 
 # load reddit data from S3
-path = "s3n://erictsai/201701_top100000.json"
+path = "s3n://erictsai/201701_top10000000.json"
 df = sqlContext.read.json(path)
 
 english_stopwords = stopwords.words("english")
@@ -33,7 +33,7 @@ total_word_count_df = group_subreddit_df.rdd.map(lambda row: (row.subreddit, row
 
 # a list of unique subreddits
 subreddit_list = group_subreddit_df.select('subreddit').rdd.flatMap(lambda x: x).collect()
-subreddit_list = subreddit_list[:1000]
+#subreddit_list = subreddit_list[:1000]
 print("number of reddits: %d" % len(subreddit_list))
 
 # dictionary mapping the subreddit name to its index
