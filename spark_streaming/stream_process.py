@@ -54,6 +54,26 @@ subreddit_list = subreddit_list[0][0].split()
 
 total_count_list = others_df.select("content").where("category = 'total_counts'").collect()
 total_count_list = map(int, total_count_list[0][0].split())
+
+def check_database_update():
+    cluster = Cluster(['10.0.0.4'])
+    session = cluster.connect('playground')
+
+    query = "SELECT content FROM others WHERE category = 'tweet_count'"
+    response = session.execute(query)
+    tweet_count_dict = json.loads(response[0].content)
+
+    if len(tweet_count_dict) != len(subreddit_list):
+        tweet_count_dict = dict(zip(subreddit_list, [0 for _ in range(len(subreddit_list))]))
+    
+    query = "INSERT INTO others (category, content) VALUES ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
+    session.execute(query)
+    session.shutdown()
+    return
+
+check_database_update()
+print("--finish knowledge setup--")
+
 ssc = StreamingContext(sc, 10) 
 
 #listener = myListener()
@@ -80,7 +100,7 @@ def get_top_topic(word_set):
     #query = "word = " + "' and word = '".join(word_set) + "'"
     #word_count_list = freq_vector_df.select("counts").where(query).rdd.map(lambda row: map(int, row.counts.split())).collect()
     if not word_count_list:
-        return subreddit_list[0]
+        return 'No matched reddit'
     word_count_list = [sum(x) for x in zip(*word_count_list)]
     percentage_list = map(lambda x,y: x/float(y) if y != 0 else 1, word_count_list, total_count_list )
     print(subreddit_list[ percentage_list.index(max(percentage_list)) ])
@@ -89,7 +109,7 @@ def get_top_topic(word_set):
 
 subreddit_topic = parsed.map(lambda tweet: get_top_topic(get_word_set(tweet['text'])))
 subreddit_topic.pprint()
-
+    
 def update_tweet_count(partition):
     cluster = Cluster(['10.0.0.4'])
     session = cluster.connect('playground')
@@ -97,9 +117,10 @@ def update_tweet_count(partition):
     query = "SELECT content FROM others WHERE category = 'tweet_count'"
     response = session.execute(query)
     tweet_count_dict = json.loads(response[0].content)
-    
+
     for row in partition:
-    	tweet_count_dict[row] += 1
+        if row in tweet_count_dict:
+    	    tweet_count_dict[row] += 1
 
     query = "INSERT INTO others (category, content) VALUES ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
     session.execute(query)
