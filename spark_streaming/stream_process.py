@@ -102,11 +102,12 @@ def get_top_topic(word_set):
     if not word_count_list:
         return 'No matched reddit'
     word_count_list = [sum(x) for x in zip(*word_count_list)]
-    percentage_list = map(lambda x,y: x/float(y) if y != 0 else 1, word_count_list, total_count_list )
-    print(subreddit_list[ percentage_list.index(max(percentage_list)) ])
+    percentage_list = map(lambda x,y: x/float(y) if y != 0 else 0, word_count_list, total_count_list )
     return subreddit_list[ percentage_list.index(max(percentage_list)) ]
     #return random.sample(subreddit_list, 1)[0]
 
+#parsed.map(lambda tweet: tweet['text']).pprint()
+parsed.map(lambda tweet: get_word_set(tweet['text'])).pprint()
 subreddit_topic = parsed.map(lambda tweet: get_top_topic(get_word_set(tweet['text'])))
 subreddit_topic.pprint()
     

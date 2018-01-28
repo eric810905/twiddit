@@ -14,7 +14,7 @@ sc.setLogLevel("WARN")
 sqlContext = SQLContext(sc)
 
 # load reddit data from S3
-path = "s3n://erictsai/201701_top1000.json"
+path = "s3n://erictsai/201701_top100000.json"
 df = sqlContext.read.json(path)
 
 english_stopwords = stopwords.words("english")
@@ -28,11 +28,13 @@ def word_process(rdd):
 
 # aggregate the reddit comments by subreddit and counts the total word count for each subreddit
 group_subreddit_df = df.groupby("subreddit").agg(F.concat_ws(" ", F.collect_list('body')).alias('all_text'))
-group_subreddit_df = group_subreddit_df.rdd.map(word_process).toDF(["subreddit", "all_text"]).limit(10)
+group_subreddit_df = group_subreddit_df.rdd.map(word_process).toDF(["subreddit", "all_text"])
 total_word_count_df = group_subreddit_df.rdd.map(lambda row: (row.subreddit, row.all_text.count(" ")))
 
 # a list of unique subreddits
 subreddit_list = group_subreddit_df.select('subreddit').rdd.flatMap(lambda x: x).collect()
+subreddit_list = subreddit_list[:1000]
+print("number of reddits: %d" % len(subreddit_list))
 
 # dictionary mapping the subreddit name to its index
 indicesMap = dict(zip(subreddit_list, range(len(subreddit_list))))
@@ -51,7 +53,8 @@ def construct_count_list(row):
     word, counts = row[0], row[1]
     count_list = [ 0 for _ in range(len(subreddit_list))]
     for (subreddit, count) in counts:
-        count_list[ indicesMap[subreddit] ] = count
+        if subreddit in indicesMap:
+            count_list[ indicesMap[subreddit] ] = count
     count_string = " ".join(map(str, count_list))
     return (word, count_string)
 
@@ -68,7 +71,8 @@ count_string_df.write\
 # a list of total word counts of the subreddits
 total_word_count_list = [ 0 for _ in range(len(subreddit_list))]
 for subreddit, total_count in total_word_count_df.collect():
-    total_word_count_list[indicesMap[subreddit]] = total_count
+    if subreddit in indicesMap:
+        total_word_count_list[indicesMap[subreddit]] = total_count
 
 spark = SparkSession(sc).builder\
                 .master("spark://10.0.0.5:7077")\
