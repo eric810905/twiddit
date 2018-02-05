@@ -1,5 +1,6 @@
 """
-This script streaming process the twitter messages from kafka.
+This script streaming process the twitter messages from kafka. Each tweet is
+classified into a subreddit topic. The result is stored back to Cassandra.
 
 """
 from pyspark import SparkContext  
@@ -15,14 +16,14 @@ import re
 import os.path
 
 class myListener(StreamingListener):
-    """
+    """ A StreamingListener object which is called at the mini-batch level.
     """
     def __init__(self, sparkcontext):
         self.sc = sparkcontext
 
     def onBatchCompleted(self, batchCompleted):
-        """
-        Called when processing of a batch of jobs has completed.
+        """Called when the job of a mini-batch has completed. Update the count
+        of tweets for every subreddits.
         """
         print(batchCompleted.toString())
 
@@ -32,14 +33,17 @@ class myListener(StreamingListener):
         cluster = Cluster([config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
         session = cluster.connect(config["CASSANDRA"]["KEYSPACE"])
         tweet_count_accumulator_dict = get_tweet_count_dict(self.sc)
-        tweet_count_dict = {k: v.value for k, v in tweet_count_accumulator_dict.iteritems()}
-        query = "INSERT INTO others (category, content) VALUES ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
+        tweet_count_dict = \
+            {k: v.value for k, v in tweet_count_accumulator_dict.iteritems()}
+        query = "INSERT INTO others (category, content) VALUES \
+            ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
         session.execute(query)
 
         # update the top subreddits for the web demo to display        
         rank = Counter(tweet_count_dict)
         top_tweets = rank.most_common(config["WEB"]["NUM_SUBREDDIT"])
-        query = "INSERT INTO others (category, content) VALUES ('tweet_count_web', '%s')" % (json.dumps(dict(top_tweets)))
+        query = "INSERT INTO others (category, content) VALUES \
+            ('tweet_count_web', '%s')" % (json.dumps(dict(top_tweets)))
         session.execute(query)
         session.shutdown()
         return
@@ -48,21 +52,34 @@ class myListener(StreamingListener):
         implements = ["org.apache.spark.streaming.api.java.PythonStreamingListener"]
 
 def get_tweet_count_dict(sparkContext):
+    """
+    """
     if ('tweet_count_dict' not in globals()):
-        # construct a dict counting the number of classified tweets in each subreddt
+        # Construct a dict of accumulators which counts the number of 
+        # classified tweets in each subreddt.
 	with open(os.path.dirname(__file__) + "/../config.json", "r") as f:
 	    config = json.load(f)
+
         cluster = Cluster([config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
         session = cluster.connect(config["CASSANDRA"]["KEYSPACE"])
-        query = "SELECT content FROM others WHERE category = '%s'" % config["CASSANDRA"]["SUBREDDIT_LIST_CATEGORY_NAME"]
+        query = "SELECT content FROM others WHERE category = '%s'" % \
+            config["CASSANDRA"]["SUBREDDIT_LIST_CATEGORY_NAME"]
         response = session.execute(query)
+
         subreddit_list = response[0].content.split()
-        tweet_count_dict = dict(zip(subreddit_list, [sparkContext.accumulator(0) for _ in range(len(subreddit_list))]))
+
+        tweet_count_dict = dict(zip(subreddit_list, [sparkContext.accumulator(0) \
+            for _ in range(len(subreddit_list))]))
+
         session.shutdown()
+
         globals()['tweet_count_dict'] = tweet_count_dict
+
     return globals()['tweet_count_dict']
 
 class twitterStreamingProcess( object ):
+    """
+    """
     def __init__( self ):
 	with open(os.path.dirname(__file__) + "/../config.json", "r") as f:
 	    self.config = json.load(f)
@@ -71,10 +88,14 @@ class twitterStreamingProcess( object ):
         self.subreddit_word_count_dict = self.get_subreddit_word_count()
 
     def get_word_set(self, tweet_text):
+        """ get a set of important words
+        """
 	tweet_text = filter ( lambda x: x in set(string.printable), tweet_text)
 	tweet_text = tweet_text.lower()
-	word_list = re.findall(r'\w+', tweet_text, flags = re.UNICODE | re.LOCALE)
-	important_word_list = filter(lambda x: x not in self.english_stopwords, word_list)
+	word_list = \
+            re.findall(r'\w+', tweet_text, flags = re.UNICODE | re.LOCALE)
+	important_word_list = \
+            filter(lambda x: x not in self.english_stopwords, word_list)
 	return set(important_word_list)
 
     def get_top_topic(self, word_set):
