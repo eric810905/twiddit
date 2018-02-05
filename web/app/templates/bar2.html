@@ -1,0 +1,62 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+<script>
+window.onload = function () {
+
+var chart = new CanvasJS.Chart("chartContainer", {
+	title: {
+		text: "Number of Tweets of Each Reddit"
+	},
+	axisY: {
+		title: "Tweets",
+		suffix: ""
+	},
+	data: [{
+		type: "column",	
+		yValueFormatString: "#,###",
+		indexLabel: "{y}",
+		dataPoints: [
+			{ label: "boiler1", y: 2000 },
+			{ label: "boiler2", y: 163 },
+			{ label: "boiler3", y: 154 },
+			{ label: "boiler4", y: 176 },
+			{ label: "boiler5", y: 184 },
+			{ label: "boiler6", y: 122 }
+		]
+	}]
+});
+
+function updateChart() {
+	var boilerColor, deltaY, yVal;
+	var dps = chart.options.data[0].dataPoints;
+	var xhttp = new XMLHttpRequest();
+  	xhttp.onreadystatechange = function() {
+    		if (this.readyState == 4 && this.status == 200) {
+			var tweet_info = JSON.parse(this.responseText);
+			tweets = Object.keys(tweet_info);
+			for (var i = 0; i < tweets.length; i++) {
+				yVal = tweet_info[tweets[i]];
+				//boilerColor = yVal > 200 ? "#FF2500" : yVal >= 170 ? "#FF6000" : yVal < 170 ? "#6B8E23 " : null;
+				boilerColor = "#0084b4";
+				dps[i] = {label: tweets[i] , y: yVal, color: boilerColor};
+			}
+			chart.options.data[0].dataPoints = dps; 
+			chart.render();
+    		}
+  	};
+  	xhttp.open("GET", "update", true);
+  	xhttp.send();
+};
+updateChart();
+
+setInterval(function() {updateChart()}, 10000);
+
+}
+</script>
+</head>
+<body>
+<div id="chartContainer" style="height: 370px; width: 100;"></div>
+<script src="https://canvasjs.com/assets/script/canvasjs.min.js"></script>
+</body>
+</html>
