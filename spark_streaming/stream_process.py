@@ -1,134 +1,158 @@
+"""
+This script streaming process the twitter messages from kafka.
+
+"""
 from pyspark import SparkContext  
-#    Spark Streaming
-from pyspark.streaming import StreamingContext
-#    Kafka
+from pyspark.streaming import StreamingContext, StreamingListener
 from pyspark.streaming.kafka import KafkaUtils  
-#    json parsing
+from cassandra.cluster import Cluster
+from nltk.corpus import stopwords
+from collections import Counter, defaultdict
+from math import log
 import json 
 import string
-from pyspark.sql import SparkSession
-import random
 import re
-from nltk.corpus import stopwords
-from cassandra.cluster import Cluster
-"""
-__all__ = ["StreamingListener"]
+import os.path
 
-class myListener(object):
-#    def __init__(self, session):
-#        self.session = session
+class myListener(StreamingListener):
+    """
+    """
+    def __init__(self, sparkcontext):
+        self.sc = sparkcontext
+
+    def onBatchCompleted(self, batchCompleted):
+        """
+        Called when processing of a batch of jobs has completed.
+        """
+        print(batchCompleted.toString())
+
+        # update the count of tweets in every subreddits
+	with open(os.path.dirname(__file__) + "/../config.json", "r") as f:
+	    config = json.load(f)
+        cluster = Cluster([config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
+        session = cluster.connect(config["CASSANDRA"]["KEYSPACE"])
+        tweet_count_accumulator_dict = get_tweet_count_dict(self.sc)
+        tweet_count_dict = {k: v.value for k, v in tweet_count_accumulator_dict.iteritems()}
+        query = "INSERT INTO others (category, content) VALUES ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
+        session.execute(query)
+
+        # update the top subreddits for the web demo to display        
+        rank = Counter(tweet_count_dict)
+        top_tweets = rank.most_common(config["WEB"]["NUM_SUBREDDIT"])
+        query = "INSERT INTO others (category, content) VALUES ('tweet_count_web', '%s')" % (json.dumps(dict(top_tweets)))
+        session.execute(query)
+        session.shutdown()
+        return
+
     class Java:
         implements = ["org.apache.spark.streaming.api.java.PythonStreamingListener"]
 
-    def onBatchCompleted(self, batchCompleted):
-        pass
-        #print(type(batchCompleted))
-        #print("WoOoOoF!!save to cassandra")
-        #return
-"""
-english_stopwords = stopwords.words("english")
+def get_tweet_count_dict(sparkContext):
+    if ('tweet_count_dict' not in globals()):
+        # construct a dict counting the number of classified tweets in each subreddt
+	with open(os.path.dirname(__file__) + "/../config.json", "r") as f:
+	    config = json.load(f)
+        cluster = Cluster([config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
+        session = cluster.connect(config["CASSANDRA"]["KEYSPACE"])
+        query = "SELECT content FROM others WHERE category = '%s'" % config["CASSANDRA"]["SUBREDDIT_LIST_CATEGORY_NAME"]
+        response = session.execute(query)
+        subreddit_list = response[0].content.split()
+        tweet_count_dict = dict(zip(subreddit_list, [sparkContext.accumulator(0) for _ in range(len(subreddit_list))]))
+        session.shutdown()
+        globals()['tweet_count_dict'] = tweet_count_dict
+    return globals()['tweet_count_dict']
 
-sc = SparkContext(appName="spark_streaming_kafka")
-sc.setLogLevel("WARN")
+class twitterStreamingProcess( object ):
+    def __init__( self ):
+	with open(os.path.dirname(__file__) + "/../config.json", "r") as f:
+	    self.config = json.load(f)
+        self.english_stopwords = stopwords.words("english")
+        self.num_subreddit = None
+        self.subreddit_word_count_dict = self.get_subreddit_word_count()
 
-spark = SparkSession(sc).builder\
-                .master("spark://10.0.0.10:7077")\
-                .appName("spark_stream")\
-                .config("--packages", "com.datastax.spark:spark-cassandra-connector_2.11:2.0.6,org.apache.spark:spark-streaming-kafka-0-8_2.11:2.0.2")\
-                .getOrCreate()
+    def get_word_set(self, tweet_text):
+	tweet_text = filter ( lambda x: x in set(string.printable), tweet_text)
+	tweet_text = tweet_text.lower()
+	word_list = re.findall(r'\w+', tweet_text, flags = re.UNICODE | re.LOCALE)
+	important_word_list = filter(lambda x: x not in self.english_stopwords, word_list)
+	return set(important_word_list)
 
-freq_vector_df = spark.read\
-    .format("org.apache.spark.sql.cassandra")\
-    .options(table="freq_vector", keyspace="playground")\
-    .load()
+    def get_top_topic(self, word_set):
+	if not word_set:
+	    return "No matched reddit"
+	word_freq_dict = defaultdict(float)
+	
+        cluster = Cluster([self.config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
+        session = cluster.connect(self.config["CASSANDRA"]["KEYSPACE"])
+	query = "SELECT counts FROM %s WHERE word IN ('" % (self.config["CASSANDRA"]["WORD_FREQUENCY_TABLE"]) + "', '".join(word_set) + "')"
+	response = session.execute(query)
 
-others_df = spark.read\
-    .format("org.apache.spark.sql.cassandra")\
-    .options(table="others", keyspace="playground")\
-    .load()
+	for row in response:
+	    freq_dict = json.loads(row.counts)
+	    for reddit in freq_dict:
+                # tf
+		#word_freq_dict[reddit] += freq_dict[reddit]
+	
+                # tf-itf
+		word_freq_dict[reddit] += (freq_dict[reddit] * log(self.num_subreddit/float(len(freq_dict))))
 
-word_count_dict = dict(freq_vector_df.rdd.map(lambda row: (row.word, map(int, row.counts.split()))).collect())
-    
-subreddit_list = others_df.select("content").where("category = 'subreddits'").collect()
-subreddit_list = subreddit_list[0][0].split()
+	session.shutdown()
+	if not word_freq_dict:
+	    return "No matched subreddit"
+	else:
+            for result, _ in Counter(word_freq_dict).most_common(self.config["TWITTER_STREAMING"]["SEARCH_TOP_SUBREDDIT_THRESHOULD"]):
+                if self.subreddit_word_count_dict[result] > self.config["TWITTER_STREAMING"]["WORD_COUNT_THRESHOULD"]:
+                    return result
+            return "No subreddit match the threshould constraints"
+            """
+	    result, _ = Counter(word_freq_dict).most_common(1)[0]
+	    tweet_count_dict[result].add(1)
+	    return result
+            """
 
-total_count_list = others_df.select("content").where("category = 'total_counts'").collect()
-total_count_list = map(int, total_count_list[0][0].split())
+    def get_subreddit_word_count(self):
+        cluster = Cluster([self.config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
+        session = cluster.connect(self.config["CASSANDRA"]["KEYSPACE"])
+	query = "SELECT * FROM %s" % (self.config["CASSANDRA"]["WORD_COUNT_TABLE"])
+	response = session.execute(query)
+        
+        subreddit_word_count_dict = {}
+        for row in response:
+            subreddit_word_count_dict[row.subreddit] = row.word_count
 
-def check_database_update():
-    cluster = Cluster(['10.0.0.4'])
-    session = cluster.connect('playground')
+        return subreddit_word_count_dict
 
-    query = "SELECT content FROM others WHERE category = 'tweet_count'"
-    response = session.execute(query)
-    tweet_count_dict = json.loads(response[0].content)
+    def start(self):
+	"""
+	comsume messages from kafka and classify the tweets into topics
+	"""
+	sc = SparkContext(appName="spark_streaming_kafka")
+	sc.setLogLevel("WARN")
+	ssc = StreamingContext(sc, self.config["TWITTER_STREAMING"]["MINI_BATCH_TIME_INTERVAL_SEC"] )
+	listener = myListener(sc)
+	ssc.addStreamingListener(listener)
 
-    if len(tweet_count_dict) != len(subreddit_list):
-        tweet_count_dict = dict(zip(subreddit_list, [0 for _ in range(len(subreddit_list))]))
-    
-    query = "INSERT INTO others (category, content) VALUES ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
-    session.execute(query)
-    session.shutdown()
-    return
+        self.num_subreddit = len(get_tweet_count_dict(sc))
+	print("==========classification to %d subreddits==========" % self.num_subreddit)
 
-check_database_update()
-print("--finish knowledge setup--")
+	kafkaStream = KafkaUtils.createStream(ssc, self.config["DEFAULT"]["KAFKA_PUBLIC_IP"]+':2181', 'spark-streaming', {'twitter':1})
+	
+	# load streaming message from kafka
+	parsed = kafkaStream.map(lambda v: json.loads(v[1]))
+	parsed.count().map(lambda x:'Tweets in this batch: %s' % x).pprint()
 
-ssc = StreamingContext(sc, 10) 
+	subreddit_topic = parsed.map(lambda tweet: self.get_word_set(tweet['text']))
+	subreddit_topic.pprint()
+	subreddit_topic = subreddit_topic.map(self.get_top_topic)
+	subreddit_topic.pprint()
+	
+	ssc.start()
+	ssc.awaitTermination()
+	return
 
-#listener = myListener()
-#ssc.addStreamingListener(listener)
+def main():
+    process = twitterStreamingProcess()
+    process.start()
 
-kafkaStream = KafkaUtils.createStream(ssc, 'ec2-35-161-255-24.us-west-2.compute.amazonaws.com:2181', 'spark-streaming', {'twitter':1}) 
-
-parsed = kafkaStream.map(lambda v: json.loads(v[1])) 
-
-parsed.count().map(lambda x:'Tweets in this batch: %s' % x).pprint()
-
-def get_word_set(tweet_text):
-    tweet_text = filter ( lambda x: x in set(string.printable), tweet_text)
-    tweet_text = tweet_text.lower()
-    word_list = re.findall(r'\w+', tweet_text, flags = re.UNICODE | re.LOCALE)
-    important_word_list = filter(lambda x: x not in english_stopwords, word_list)
-    return set(important_word_list)
- 
-def get_top_topic(word_set):
-    word_count_list = []
-    for word in word_set:
-	if word in word_count_dict:
-            word_count_list.append(word_count_dict[word])
-    #query = "word = " + "' and word = '".join(word_set) + "'"
-    #word_count_list = freq_vector_df.select("counts").where(query).rdd.map(lambda row: map(int, row.counts.split())).collect()
-    if not word_count_list:
-        return 'No matched reddit'
-    word_count_list = [sum(x) for x in zip(*word_count_list)]
-    percentage_list = map(lambda x,y: x/float(y) if y != 0 else 0, word_count_list, total_count_list )
-    return subreddit_list[ percentage_list.index(max(percentage_list)) ]
-    #return random.sample(subreddit_list, 1)[0]
-
-#parsed.map(lambda tweet: tweet['text']).pprint()
-parsed.map(lambda tweet: get_word_set(tweet['text'])).pprint()
-subreddit_topic = parsed.map(lambda tweet: get_top_topic(get_word_set(tweet['text'])))
-subreddit_topic.pprint()
-    
-def update_tweet_count(partition):
-    cluster = Cluster(['10.0.0.4'])
-    session = cluster.connect('playground')
-
-    query = "SELECT content FROM others WHERE category = 'tweet_count'"
-    response = session.execute(query)
-    tweet_count_dict = json.loads(response[0].content)
-
-    for row in partition:
-        if row in tweet_count_dict:
-    	    tweet_count_dict[row] += 1
-
-    query = "INSERT INTO others (category, content) VALUES ('tweet_count', '%s')" % (json.dumps(tweet_count_dict))
-    session.execute(query)
-    session.shutdown()
-    return
-
-subreddit_topic.foreachRDD( lambda rdd: rdd.foreachPartition(update_tweet_count) )
-ssc.start()  
-ssc.awaitTermination() 
-
+if __name__ == '__main__':
+    main()

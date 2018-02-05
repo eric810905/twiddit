@@ -1,89 +1,160 @@
 """
-This script batch process reddit data set to generate a table of word counts for each word in every subreddit
+This script batch process reddit dataset to generate the term frequency table
+for every subreddits. The resulting table will be used to classify twitter 
+message.
+
+use the following command to run this file:
+spark-submit --conf spark.cassandra.connection.host=10.0.0.xyz \
+--packages com.datastax.spark:spark-cassandra-connector_2.11:2.0.6 \
+--executor-memory 6G --master spark://10.0.0.xyz:7077 \
+reddit_batch_process.py
 """
 from pyspark import SparkContext
-from pyspark.sql import SQLContext, SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import MapType,StringType,IntegerType
-from collections import Counter
-import re
+from pyspark.sql import SQLContext
 from nltk.corpus import stopwords
+from cassandra.cluster import Cluster
+import cassandra
+from collections import Counter, defaultdict
+import os.path
+import json
+import re
 
-sc = SparkContext(appName="spark_batch_process")
-sc.setLogLevel("WARN")
-sqlContext = SQLContext(sc)
+class redditBatchProcess( object ):
+    """ Batch process the reddit data set and store the result for 
+    classification in Cassandra database.
+    """
+    def __init__( self ):
+        # configurations
+	with open(os.path.dirname(__file__) + "/../config.json", "r") as f:
+	    self.config = json.load(f)
+	
+        self.english_stopwords = stopwords.words("english")
 
-# load reddit data from S3
-path = "s3n://erictsai/201701_top10000000.json"
-df = sqlContext.read.json(path)
+        # total word count for every subreddit
+	self.total_word_count_dict = {}
 
-english_stopwords = stopwords.words("english")
+    def word_process(self, text):
+        """ Transform a string into a set of important words in this string.
+        Args:
+    	  text: string
+        Returns: set of important words
+        """
+	text_str = text.lower()
+        word_list = re.findall(r'\w+', text_str, \
+            flags = re.UNICODE | re.LOCALE)
+	important_word_list = filter(lambda x: x not in \
+            self.english_stopwords, word_list)
+	return important_word_list
 
-def word_process(rdd):
-    text_str = rdd.all_text.lower()
-    word_list = re.findall(r'\w+', text_str, flags = re.UNICODE | re.LOCALE)
-    important_word_list = filter(lambda x: x not in english_stopwords, word_list)
-    # this can be simplify
-    return rdd.subreddit, " ".join(important_word_list)
+    def generate_word_count(self, row):
+	""" Calculate the count of each word given a row of reddit comment.
+        Returns: a list of tuples having the word and the count
+	"""
+	word_counter = Counter(row[1])
+	return [ (word, [ (row[0], word_counter[word]) ] ) \
+            for word in word_counter ]
 
-# aggregate the reddit comments by subreddit and counts the total word count for each subreddit
-group_subreddit_df = df.groupby("subreddit").agg(F.concat_ws(" ", F.collect_list('body')).alias('all_text'))
-group_subreddit_df = group_subreddit_df.rdd.map(word_process).toDF(["subreddit", "all_text"])
-total_word_count_df = group_subreddit_df.rdd.map(lambda row: (row.subreddit, row.all_text.count(" ")))
+    def construct_subreddit_word_freq(self, row):
+	""" Generate the term freqency for each subreddit given a word.
+        The counts are represnted by json string format.
+        Returns: tuple of word and word counts in json string format
+	"""
+        # list of tuple (subreddit, count)
+	word, subreddit_word_count_list = row
 
-# a list of unique subreddits
-subreddit_list = group_subreddit_df.select('subreddit').rdd.flatMap(lambda x: x).collect()
-#subreddit_list = subreddit_list[:1000]
-print("number of reddits: %d" % len(subreddit_list))
+        # count the number of this word in the subreddit respectively
+	subreddit_counter = Counter()
+	for subreddit, word_count in subreddit_word_count_list:
+            subreddit_counter[subreddit] += word_count
+        
+        # convert counter to dict
+	subreddit_dict = dict( {k: v/float(self.total_word_count_dict[k]) \
+            if self.total_word_count_dict[k] != 0 else 0 \
+            for k, v in subreddit_counter.most_common()} )
+	return (word, json.dumps(subreddit_dict))
 
-# dictionary mapping the subreddit name to its index
-indicesMap = dict(zip(subreddit_list, range(len(subreddit_list))))
+    def start( self ):
+        """ start batch processing
+        """
+	sc = SparkContext(appName="spark_batch_process")
+	sc.setLogLevel("WARN")
+	sqlContext = SQLContext(sc)
 
-# calculate the count of each word for every subreddit
-#udf1 = F.udf(lambda x: dict(Counter(x.split())),MapType(StringType(),IntegerType()))
-#word_count_df = df.groupby("subreddit").agg(udf1(F.concat_ws(" ", F.collect_list('body'))).alias('word_frequency'))
-word_count_df = group_subreddit_df.rdd.map(lambda rdd: (rdd.subreddit, dict(Counter(rdd.all_text.split())))).toDF(['subreddit', 'word_frequency'])
+	# load reddit data from S3
+	df = sqlContext.read.\
+             json(self.config["REDDIT_BATCH_PROCESS"]["S3_DATA_PATH"])
 
-# exchange the key of rdd from subreddit to word
-word_to_subreddit = word_count_df.rdd.flatMap(lambda row:  [( word, [(row.subreddit, (row.word_frequency[word]))] ) for word in row.word_frequency]) \
-                 .reduceByKey(lambda a, b: a + b)
+	cluster = Cluster([self.config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
+	session = cluster.connect(self.config["CASSANDRA"]["KEYSPACE"])
 
-# generate the word counts for each subreddit. the counts are represnted by string
-def construct_count_list(row):
-    word, counts = row[0], row[1]
-    count_list = [ 0 for _ in range(len(subreddit_list))]
-    for (subreddit, count) in counts:
-        if subreddit in indicesMap:
-            count_list[ indicesMap[subreddit] ] = count
-    count_string = " ".join(map(str, count_list))
-    return (word, count_string)
+        # create a new table. truncate the table if it exists.
+	try:
+	    query = "CREATE TABLE %s (word text, counts text,\
+                PRIMARY KEY (word), )" % \
+                self.config["CASSANDRA"]["WORD_FREQUENCY_TABLE"]
+	    response = session.execute(query)
+	except cassandra.AlreadyExists:
+	    query = "TRUNCATE %s" % \
+                self.config["CASSANDRA"]["WORD_FREQUENCY_TABLE"]
+	    response = session.execute(query)
 
-# construct the string of word counts for each word and store the result to cassandra
-count_string_df = word_to_subreddit.map(construct_count_list)
-count_string_df = count_string_df.toDF(["word", "counts"])
+	try:
+	    query = "CREATE TABLE %s (subreddit text, word_count counter, \
+                PRIMARY KEY (subreddit), )" % \
+                self.config["CASSANDRA"]["WORD_COUNT_TABLE"]
+	    response = session.execute(query)
+	except cassandra.AlreadyExists:
+	    query = "TRUNCATE %s" %\
+                 self.config["CASSANDRA"]["WORD_COUNT_TABLE"]
+	    response = session.execute(query)
 
-count_string_df.write\
-    .format("org.apache.spark.sql.cassandra")\
-    .mode('append')\
-    .options(table="freq_vector", keyspace="playground")\
-    .save()
+	# aggregate the reddit comments by subreddit and counts the total word
+        # count for each subreddit
+	subreddit_word_rdd = df.rdd.\
+            map(lambda row: (row.subreddit, self.word_process(row.body)))
+	subreddit_word_count_df = \
+            subreddit_word_rdd.map(lambda row: (row[0], len(row[1])))\
+	    .reduceByKey( lambda a, b: a + b ).toDF(["subreddit", "word_count"])
 
-# a list of total word counts of the subreddits
-total_word_count_list = [ 0 for _ in range(len(subreddit_list))]
-for subreddit, total_count in total_word_count_df.collect():
-    if subreddit in indicesMap:
-        total_word_count_list[indicesMap[subreddit]] = total_count
+	subreddit_word_count_df.write\
+	    .format("org.apache.spark.sql.cassandra")\
+	    .mode('append')\
+	    .options(table=self.config["CASSANDRA"]["WORD_COUNT_TABLE"], \
+            keyspace=self.config["CASSANDRA"]["KEYSPACE"])\
+	    .save()
 
-spark = SparkSession(sc).builder\
-                .master("spark://10.0.0.5:7077")\
-                .appName("spark_stream")\
-                .config("--packages", "com.datastax.spark:spark-cassandra-connector_2.11:2.0.6")\
-                .getOrCreate()
+	# construct a dict of total word counts of every subreddits
+	query = "SELECT * FROM %s" % \
+            self.config["CASSANDRA"]["WORD_COUNT_TABLE"]
+	response = session.execute(query)
 
-# store the subreddit names and total word counts
-spark.createDataFrame([{'category':'subreddits', 'content': " ".join(subreddit_list)}, {'category':'total_counts', 'content': " ".join(map(str, total_word_count_list))}]).write\
-    .format("org.apache.spark.sql.cassandra")\
-    .mode('append')\
-    .options(table="others", keyspace="playground")\
-    .save()
+	for row in response:
+	    self.total_word_count_dict[row.subreddit] = row.word_count
 
+	session.shutdown()
+
+	# construct the word counts as json string format for each word and 
+        # store the result to cassandra
+	group_word_rdd = subreddit_word_rdd\
+            .flatMap( self.generate_word_count )\
+	    .reduceByKey(lambda a, b: a + b)
+
+	group_subreddit_df = group_word_rdd\
+            .map(self.construct_subreddit_word_freq).toDF(["word", "counts"])
+
+	group_subreddit_df.write\
+	    .format("org.apache.spark.sql.cassandra")\
+	    .mode('append')\
+	    .options(table=self.config["CASSANDRA"]["WORD_FREQUENCY_TABLE"], \
+            keyspace=self.config["CASSANDRA"]["KEYSPACE"])\
+	    .save()
+
+	return
+
+def main():
+    process = redditBatchProcess()
+    process.start()
+    return
+
+if __name__ == '__main__':
+    main()
