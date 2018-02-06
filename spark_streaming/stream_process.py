@@ -169,7 +169,8 @@ class twitterStreamingProcess( object ):
         
         subreddit_word_count_dict = {}
         for row in response:
-            subreddit_word_count_dict[row.subreddit] = row.word_count
+            #subreddit_word_count_dict[row.subreddit] = row.word_count
+            subreddit_word_count_dict[row.reddit] = row.word_count
 
         return subreddit_word_count_dict
 
