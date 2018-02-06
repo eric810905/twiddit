@@ -1,25 +1,21 @@
-# Project Idea
-Use huge dynamic knowledge base (reddit) to identify the topic of the contenct on social media in real-time.
+# Twiddit
+Use reddit comments dataset to classify the twitter messages to the subreddit topics. The tweet is classified to a subreddit topic with the highest term frequency–inverse document frequency (tf-idf) metric.
 
-# Purpose and the most common use cases
-Knowing what people are talking about is useful for digital marketing to understand the users' interests. 
+# Demo
+http://ec2-34-213-107-177.us-west-2.compute.amazonaws.com:5000/demo
+
+# Purpose and Use Cases
+Knowing what people are talking about and the people's interests are useful for digital marketing and social media monitoring.
+
+# Proposed Architecture
+See the slides for the data pipeline:
+https://docs.google.com/presentation/d/1-tYs0eIeKXNV5WvOdctHIi5myJ9o4_DX8Mx5SVk2wug/edit#slide=id.g306586f75a_0_725
 
 # Technologies well-suited to solve the challenges
-Elasticsearch - extract the statistics of the knowledge base.
-Kafka - Need the data ingestion system to analyze the real-time social media data.    
-Spark streaming - stream process the real-time social media data.
+Spark - batch process reddit dataset to generate term-frequency table for every word and every subreddit.
+Spark Streaming - stream process the twitter message and classify.
+Kafka - handle the twitter streaming messages.
+Cassandra - a database with high availability for Spark Streaming to query the term-frequency table and class.
 
-# Proposed architecture
-Elasticsearch (Reddit Dataset) 
-                              \ 
-                                -> Spark Steaming -> Flask
-                              /
-  (Twitter) ->        Kafka 
-
-# The primary engineering challenges?
-Load and construct the index of 2TB Reddit dataset into Elasticsearch.
-Streaming process real-time tiwtter data.
-
-# The (quantitative) specifications/constraints.
-Process the twitter data within a minute.
-Update Reedit Knowledge base every minute.
+# The primary engineering challenges
+Streaming process tiwtter message at the rate of 1000/sec. Classify every tweet into over 34,000 subreddit topics.
