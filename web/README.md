@@ -1,1 +1,1 @@
-run ./run.py to lauch the demo website
+run run.py to lauch the demo website
