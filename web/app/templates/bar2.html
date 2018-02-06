@@ -27,30 +27,38 @@ var chart = new CanvasJS.Chart("chartContainer", {
 	}]
 });
 
+function compare(a,b) {
+    if (a.y < b.y)
+        return 1;
+    if (a.y > b.y)
+        return -1;
+    return 0;
+}
+
 function updateChart() {
-	var boilerColor, deltaY, yVal;
-	var dps = chart.options.data[0].dataPoints;
-	var xhttp = new XMLHttpRequest();
-  	xhttp.onreadystatechange = function() {
-    		if (this.readyState == 4 && this.status == 200) {
-			var tweet_info = JSON.parse(this.responseText);
-			tweets = Object.keys(tweet_info);
-			for (var i = 0; i < tweets.length; i++) {
-				yVal = tweet_info[tweets[i]];
-				//boilerColor = yVal > 200 ? "#FF2500" : yVal >= 170 ? "#FF6000" : yVal < 170 ? "#6B8E23 " : null;
-				boilerColor = "#0084b4";
-				dps[i] = {label: tweets[i] , y: yVal, color: boilerColor};
-			}
-			chart.options.data[0].dataPoints = dps; 
-			chart.render();
-    		}
-  	};
-  	xhttp.open("GET", "update", true);
-  	xhttp.send();
+    var boilerColor, deltaY, yVal;
+    var dps = chart.options.data[0].dataPoints;
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+        if (this.readyState == 4 && this.status == 200) {
+            var tweet_info = JSON.parse(this.responseText);
+            tweets = Object.keys(tweet_info);
+            for (var i = 0; i < tweets.length; i++) {
+                yVal = tweet_info[tweets[i]];
+                boilerColor = "#0084b4";
+                dps[i] = {label: tweets[i] , y: yVal, color: "#0084b4"};
+            }
+            dps.sort(compare);
+            chart.options.data[0].dataPoints = dps; 
+            chart.render();
+        }
+    };
+    xhttp.open("GET", "update", true);
+    xhttp.send();
 };
 updateChart();
 
-setInterval(function() {updateChart()}, 10000);
+setInterval(function() {updateChart()}, 5000);
 
 }
 </script>
