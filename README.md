@@ -13,8 +13,11 @@ https://docs.google.com/presentation/d/1-tYs0eIeKXNV5WvOdctHIi5myJ9o4_DX8Mx5SVk2
 
 # Technologies well-suited to solve the challenges
 Spark - batch process reddit dataset to generate term-frequency table for every word and every subreddit.
+
 Spark Streaming - stream process the twitter message and classify.
+
 Kafka - handle the twitter streaming messages.
+
 Cassandra - a database with high availability for Spark Streaming to query the term-frequency table and class.
 
 # The primary engineering challenges
