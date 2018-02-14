@@ -72,14 +72,13 @@ def get_tweet_count_dict(sparkContext):
 
         cluster = Cluster([config["DEFAULT"]["DBCLUSTER_PRIVATE_IP"]])
         session = cluster.connect(config["CASSANDRA"]["KEYSPACE"])
-        query = "SELECT content FROM others WHERE category = '%s'" % \
-            config["CASSANDRA"]["SUBREDDIT_LIST_CATEGORY_NAME"]
+        query = "SELECT subreddit FROM %s" % \
+            config["CASSANDRA"]["WORD_COUNT_TABLE"]
         response = session.execute(query)
 
-        subreddit_list = response[0].content.split()
-
-        tweet_count_dict = dict(zip(subreddit_list, [sparkContext.accumulator(0) \
-            for _ in range(len(subreddit_list))]))
+        tweet_count_dict = {}
+        for row in response:
+            tweet_count_dict[row.subreddit] = sparkContext.accumulator(0)
 
         session.shutdown()
 
@@ -134,9 +133,10 @@ class twitterStreamingProcess( object ):
 	for row in response:
 	    freq_dict = json.loads(row.counts)
 	    for reddit in freq_dict:
-                # tf
+                # uncomment this if using term frequency
 		#word_freq_dict[reddit] += freq_dict[reddit]
-                # tf-itf
+
+                # uncommnet this if using tf-itf
 		word_freq_dict[reddit] += (freq_dict[reddit] * \
                     log(self.num_subreddit/float(len(freq_dict))))
 
@@ -169,15 +169,14 @@ class twitterStreamingProcess( object ):
         
         subreddit_word_count_dict = {}
         for row in response:
-            #subreddit_word_count_dict[row.subreddit] = row.word_count
-            subreddit_word_count_dict[row.reddit] = row.word_count
+            subreddit_word_count_dict[row.subreddit] = row.word_count
 
         return subreddit_word_count_dict
 
     def start(self):
 	"""Comsume messages from kafka and classify the tweets into topics
 	"""
-	sc = SparkContext(appName="spark_streaming_kafka")
+	sc = SparkContext(appName = "spark_streaming_kafka")
 	sc.setLogLevel("WARN")
 	ssc = StreamingContext(sc, \
             self.config["TWITTER_STREAMING"]["MINI_BATCH_TIME_INTERVAL_SEC"] )
@@ -193,12 +192,10 @@ class twitterStreamingProcess( object ):
 	
 	# load streaming message from kafka
 	parsed = kafkaStream.map(lambda v: json.loads(v[1]))
-	parsed.count().map(lambda x:'Tweets in this batch: %s' % x).pprint()
 
         # process and classify tweets
 	subreddit_topic = \
             parsed.map(lambda tweet: self.get_word_set(tweet['text']))
-	subreddit_topic.pprint()
 	subreddit_topic = subreddit_topic.map(self.get_top_topic)
 	subreddit_topic.pprint()
 	
