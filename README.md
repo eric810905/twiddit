@@ -8,6 +8,10 @@ or
 
 http://ec2-34-213-107-177.us-west-2.compute.amazonaws.com/demo
 
+or this for the demo video
+
+https://www.youtube.com/watch?v=WyDrYVslKXY
+
 # Purpose and Use Cases
 Knowing what people are talking about and the people's interests are useful for digital marketing and social media monitoring.
 
